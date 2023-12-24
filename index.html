@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>Reaction-Diffusion</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <style>
+        body { margin: 0; }
+        #canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #canvas:focus { outline: none; }
+        #overlay {
+            position: absolute;
+            left: 10px;
+            top: 10px;
+            padding: 10px;
+            background-color: rgba(50, 50, 50, 0.7);
+            font-family: Verdana;
+            color: white;
+            font-size: 12px;
+        }
+        #overlay span {
+            display: inline-block;
+            min-width: 3em;
+        }
+        #overlay span:first-of-type {
+            /* border: 1px solid red; */
+            width: 11em;
+            display: inline-block;
+            text-align: right;
+            padding-right: 0.5em;
+        }
+        .slider {
+            width: 20em;
+            display: inline-block;
+            right: 0;
+            height: 0.75em;
+        }
+    </style>
+    <body>
+        <!-- <canvas id="canvas" tabindex="0" width="1920" height="1080"></canvas> -->
+        <canvas id="canvas" tabindex="0" width="960" height="540"></canvas>
+        <!-- <canvas id="canvas" tabindex="0" width="640" height="360"></canvas> -->
+        <!-- <canvas id="canvas" tabindex="0" width="240" height="135"></canvas> -->
+        <div id="overlay">
+            <div><span>FPS:</span><span id="fps"></span></div>
+            <div><span>Iteration:</span><span id="iteration"></span></div>
+            <div><span>Time:</span><span id="time"></span></div>
+            <div><span>Mouse:</span><span id="mouse"></span></div>
+            <div><span>Conditions:</span><span id="conditions"></span></div>
+
+            <div><span>Diffusion A:</span><input type="range" min="0.001" max="2" value="0.32" step="0.001" class="slider" id="D_A"><span id="D_A_num"></span></div>
+            <div><span>Diffusion B:</span><input type="range" min="0.001" max="2" value="0.16" step="0.001" class="slider" id="D_B"><span id="D_B_num"></span></div>
+            <div><span>Feed:</span><input type="range" min="0.001" max="0.1" value="0.03" step="0.001" class="slider" id="f"><span id="f_num"></span></div>            
+            <div><span>Kill:</span><input type="range" min="0.001" max="0.1" value="0.06" step="0.001" class="slider" id="k"><span id="k_num"></span></div>           
+            
+            <div><span>Map:</span><input type="checkbox" class="checkbox" id="map" checked></div>
+            <div><span>Iter/Frame (Speed):</span><input type="range" min="0" max="60" value="30" step="1" class="slider" id="ipf"><span id="ipf_num"></span></div>
+        </div>
+        <script id="vertex-shader" type="vertex-shader">
+            varying vec2 UV;
+            void main() {
+                UV = uv;
+                gl_Position = vec4(position, 1.0);
+            }
+        </script>
+        <script id="screen-fragment-shader" type="fragment-shader"> 
+            varying vec2 UV;
+            uniform sampler2D tex;
+            uniform vec2 resolution;
+            void main() {
+                vec2 cell_size = 1.0 / resolution;
+
+                vec4 C = texture(tex, UV);
+                vec4 N = texture(tex, UV + vec2(0.0, 1.0) * cell_size);
+                vec4 E = texture(tex, UV + vec2(1.0, 0.0) * cell_size);
+                vec4 S = texture(tex, UV + vec2(0.0, -1.0) * cell_size);
+                vec4 W = texture(tex, UV + vec2(-1.0, 0.0) * cell_size);
+
+                vec4 NE = texture(tex, UV + vec2(1.0, 1.0) * cell_size);
+                vec4 SE = texture(tex, UV + vec2(1.0, -1.0) * cell_size);
+                vec4 NW = texture(tex, UV + vec2(-1.0, 1.0) * cell_size);
+                vec4 SW = texture(tex, UV + vec2(-1.0, -1.0) * cell_size);
+
+                // https://en.wikipedia.org/wiki/Kernel_(image_processing)
+                // vec4 convolution = C * 5.0 + (N + E + S + W) * -1.0; // Sharpen
+                // vec4 convolution = C * 8.0 + (N + E + S + W) * -1.0 + (NE + SE + NW + SW) * -1.0; // Edge detection
+                // vec4 convolution = (NW + SW) * 1.0 + W * 2.0 + (NE + SE) * -1.0 + E * -2.0; // Sobel
+                // vec4 convolution = N * 1.0 + S * -1.0; // Emboss
+                // vec4 convolution = (C * 4.0 + (N + E + S + W) * 2.0 + (NE + SE + NW + SW) * 1.0) / 16.0; // Gaussian blur
+                // vec3 color = convolution.rgb;
+                // vec3 color = convolution.ggg;
+                // vec3 color = C.ggg;
+
+                // Try this: https://iquilezles.org/articles/palettes/
+                // vec3 color = vec3(mix(1.0, 0.0, smoothstep(0.0, 0.2, C.g)));
+
+                vec2 aberration = 0.05 * pow(UV - 0.5, vec2(3.0)); // Vary, increased near screen edge
+
+                vec4 C_aberr_1 = texture(tex, UV - aberration);
+                vec4 C_aberr_2 = texture(tex, UV + aberration);
+                
+                vec3 color = vec3(
+                    mix(1.0, 0.0, smoothstep(0.0, 0.2, C_aberr_1.g)),
+                    mix(1.0, 0.0, smoothstep(0.0, 0.2, C.g)),
+                    mix(1.0, 0.0, smoothstep(0.0, 0.2, C_aberr_2.g))
+                );
+
+                pc_fragColor = vec4(color, 1.0);
+            }
+        </script>
+        <script id="simulation-fragment-shader" type="fragment-shader"> 
+            varying vec2 UV;
+            uniform float aspect;
+
+            uniform sampler2D tex;
+            uniform float iteration;
+            uniform vec3 mouse;
+            uniform vec2 resolution;
+
+            uniform float D_A;
+            uniform float D_B;
+            uniform float f;
+            uniform float k;
+            uniform bool map;
+
+            void main() {
+                vec2 cell_size = 1.0 / resolution;
+
+                vec4 C = texture(tex, UV);
+                vec4 N = texture(tex, UV + vec2(0.0, 1.0) * cell_size);
+                vec4 E = texture(tex, UV + vec2(1.0, 0.0) * cell_size);
+                vec4 S = texture(tex, UV + vec2(0.0, -1.0) * cell_size);
+                vec4 W = texture(tex, UV + vec2(-1.0, 0.0) * cell_size);
+
+                vec4 NE = texture(tex, UV + vec2(1.0, 1.0) * cell_size);
+                vec4 SE = texture(tex, UV + vec2(1.0, -1.0) * cell_size);
+                vec4 NW = texture(tex, UV + vec2(-1.0, 1.0) * cell_size);
+                vec4 SW = texture(tex, UV + vec2(-1.0, -1.0) * cell_size);
+
+                vec4 lap = C * -1.0 + (N + E + S + W) * 0.2 + (NE + SE + NW + SW) * 0.05; // Requires D_A = 1.0, D_B = 0.5
+                // vec4 lap = C * -3.0 + (N + E + S + W) * 0.5 + (NE + SE + NW + SW) * 0.25;
+                // vec4 lap = C * -4.0 + (N + E + S + W) * 1.0 + (NE + SE + NW + SW) * 0.0; // Requires low diffusion rates
+
+                // deltaT is unrelated to framerate like physics engine, simply speed factor; Above 1.0 collapses into error
+                // Can remap colors later in screenQuad shader
+                // No need to clamp A or B because they dont go beyond 0-1 anyways
+                // Filling initial with uniform random does not work well, because patterns need critical mass of A or B to develop
+                // Everything just takes slow -- PATIENCE, deltaT = 1.0 is the fastest u can
+                // Adjusting both diffusion rates by the same factor acts as scaling
+                
+                float A = C.r;
+                float B = C.g;
+                float rxn = A*B*B;
+
+                float D_A_function = D_A;
+                float D_B_function = D_B;
+                float f_function = f;
+                float k_function = k;
+
+                // D_A_function = D_A * region;
+                // D_B_function = D_B * region;
+                // f_function = (0.1 - 0.01) * UV.y + 0.01;
+                // k_function = (0.07 - 0.045) * UV.x + 0.045;
+
+                if (map) {
+                    f_function = (0.1 - 0.01) * UV.y + 0.01;
+                    k_function = (0.08 - 0.03) * UV.x + 0.03;
+                    // f_function = (0.1 - 0.01) * UV.y + 0.01;
+                    // k_function = (0.08 - 0.05) * UV.x + 0.05;
+                }
+
+                vec2 new = vec2(
+                    A + (D_A_function * lap.r - rxn + f_function * (1.0 - A)),
+                    B + (D_B_function * lap.g + rxn - (k_function + f_function) * B)
+                );
+                new = mix(
+                    new,
+                    vec2(0.0, 1.0),
+                    step(0.0, mouse.z) * (1.0 - step(0.01, distance(UV, mouse.xy)))
+                );
+                new = clamp(new, 0.0, 1.0);
+
+                if (iteration == 0.0) { // Initial state
+                    new = vec2(1.0, 1.0 - step(0.2, distance(UV * vec2(aspect, 1.0), vec2(0.5))));
+                }
+
+                pc_fragColor = vec4(new, f_function, k_function);
+            }
+        </script>
+        <script type="module">
+            // Resources (they have much better versions of RD with more features than mine, please check them out):
+            // https://stackoverflow.com/questions/19872524/threejs-fragment-shader-using-recycled-frame-buffers
+            // https://www.shadertoy.com/view/3styzM
+            // https://jasonwebb.github.io/reaction-diffusion-playground/
+            // https://itp.uni-frankfurt.de/~gros/StudentProjects/Projects_1020/projekt_schulz_kaefer/
+            // https://www.karlsims.com/rdtool.html?s=gHoV3Nw
+            // https://www.karlsims.com/rd.html
+            // https://threejs.org/docs/#api/en/constants/Textures
+            // Interesting: https://personal.math.ubc.ca/~ward/papers/thesis_wanchen.pdf
+            // ^- Idea: Three-component system
+            // Idea: Transition to using lighter-weight library than THREE.js, pure webgl or TWGL
+
+            import * as THREE from 'https://unpkg.com/three@0.159.0/build/three.module.js';
+
+            const canvas = document.getElementById("canvas");
+            const renderer = new THREE.WebGLRenderer({ canvas });
+
+            window.addEventListener("resize", () => {
+                // renderer.setSize(canvas.clientWidth, canvas.clientHeight, false); // Causes memory leak, just accept skewedness for now lol
+                RTQuad.material.uniforms["aspect"].value = canvas.clientWidth / canvas.clientHeight;
+            });
+            
+            canvas.addEventListener("mousemove", e => {
+                RTQuad.material.uniforms["mouse"].value.x = e.clientX / canvas.clientWidth;
+                RTQuad.material.uniforms["mouse"].value.y = 1 - e.clientY / canvas.clientHeight;
+            });
+            canvas.addEventListener("mousedown", e => { RTQuad.material.uniforms["mouse"].value.z = e.button; }); // 0 - L, 1 - M, 2 - R 
+            canvas.addEventListener("mouseup", e => { RTQuad.material.uniforms["mouse"].value.z = -1; });
+
+            const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            const plane = new THREE.PlaneGeometry(2, 2);
+
+            var screenScene = new THREE.Scene();
+            var screenQuad = new THREE.Mesh(plane, new THREE.ShaderMaterial({
+                uniforms: { 
+                    tex: { value: null },
+                    resolution: { value: new THREE.Vector2(canvas.width, canvas.height) }
+                },
+                vertexShader: document.getElementById("vertex-shader").textContent,
+                fragmentShader: document.getElementById("screen-fragment-shader").textContent,
+            }));
+            screenScene.add(screenQuad);
+            
+            var RTScene = new THREE.Scene();
+            var RTQuad = new THREE.Mesh(plane, new THREE.ShaderMaterial({
+                uniforms: {
+                    aspect: { value: canvas.clientWidth / canvas.clientHeight },
+                    tex: { value: null },
+                    iteration: { value: 0 },
+                    mouse: { value: new THREE.Vector3(0, 0, -1) },
+                    resolution: { value: new THREE.Vector2(canvas.width, canvas.height) },
+
+                    D_A: { value: 1.0 },
+                    D_B: { value: 0.5 },
+                    f: { value: 0.03 },
+                    k: { value: 0.06 },
+                    map: { value: true },
+                },
+                vertexShader: document.getElementById("vertex-shader").textContent,
+                fragmentShader: document.getElementById("simulation-fragment-shader").textContent,
+            }));
+            RTScene.add(RTQuad);
+
+            function onSlidersInput(e) {
+                if (e.id in RTQuad.material.uniforms) {
+                    RTQuad.material.uniforms[e.id].value = e.value;
+                }
+                document.getElementById(e.id + "_num").innerHTML = e.value;
+            }
+            document.querySelectorAll(".slider").forEach(e => {
+                e.addEventListener("input", event => onSlidersInput(event.target));
+                onSlidersInput(e);
+            });
+
+            document.getElementById("map").addEventListener("change", event => {
+                RTQuad.material.uniforms["map"].value = event.target.checked;
+            });
+
+            const wrap = THREE.ClampToEdgeWrapping; // THREE.RepeatWrapping creates toroidal space
+
+            var RT1 = new THREE.WebGLRenderTarget(canvas.width, canvas.height, {
+                depthBuffer: false, stencilBuffer: false,
+                minFilter: THREE.NearestFilter,
+                magFilter: THREE.NearestFilter,
+                wrapS: wrap, wrapT: wrap,
+
+                // THIS WAS THE FIX TO ALL YOUR PROBLEMS
+                // PRECISION ERROR, THE FLOATS WERE LOSING PRECISION BY CONVERTING TO BYTES
+                format: THREE.RGBAFormat,
+                type: THREE.FloatType,
+            });
+            var RT2 = new THREE.WebGLRenderTarget(canvas.width, canvas.height, {
+                depthBuffer: false, stencilBuffer: false,
+                minFilter: THREE.NearestFilter,
+                magFilter: THREE.NearestFilter,
+                wrapS: wrap, wrapT: wrap,
+
+                format: THREE.RGBAFormat,
+                type: THREE.FloatType,
+            });
+
+            var currentRT = RT1;
+            function swapRT() {
+                if (currentRT == RT1) currentRT = RT2;
+                else currentRT = RT1;
+            }
+
+            var prevFrameTime = 0;
+            var iteration = 0;
+            const mouse = RTQuad.material.uniforms["mouse"].value; // Shortcut
+            const resolution = RTQuad.material.uniforms["resolution"].value; // Shortcut
+            const ipf = document.getElementById("ipf");
+            var pixelBuffer = new Float32Array(4);
+
+            function animate(now) {
+                var deltaTime = document.hasFocus() ? now / 1000 - prevFrameTime : 1/60;
+                document.getElementById("fps").innerHTML = Math.round(1 / deltaTime);
+                document.getElementById("iteration").innerHTML = iteration;
+                document.getElementById("time").innerHTML = (now / 1000).toFixed(2);
+                document.getElementById("mouse").innerHTML = `[x: ${mouse.x.toFixed(2)}, y: ${mouse.y.toFixed(2)}, btn: ${mouse.z.toFixed(0)}]`;
+                prevFrameTime = now / 1000;
+                                
+                renderer.readRenderTargetPixels(currentRT, mouse.x * resolution.x, (1 - mouse.y) * resolution.y, 1, 1, pixelBuffer);
+                document.getElementById("conditions").innerHTML = `[f: ${pixelBuffer[2].toFixed(3)}, k: ${pixelBuffer[3].toFixed(3)}]`;
+
+                for (var i = 0; i < ipf.value; i++) { // https://github.com/jasonwebb/reaction-diffusion-playground/blob/master/entry.js
+                    renderer.setRenderTarget(currentRT);
+                    renderer.render(RTScene, camera);
+
+                    screenQuad.material.uniforms["tex"].value = currentRT.texture;
+                    RTQuad.material.uniforms["tex"].value = currentRT.texture;
+
+                    swapRT();
+                    RTQuad.material.uniforms["iteration"].value = iteration;
+                    iteration++;
+
+                    renderer.setRenderTarget(null);
+                    renderer.render(screenScene, camera);
+                }
+                requestAnimationFrame(animate);
+            }
+            requestAnimationFrame(animate);
+        </script>
+    </body>
+</html>
